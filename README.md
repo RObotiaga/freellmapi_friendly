@@ -33,11 +33,13 @@ npm install
 # Create local env file.
 cp .env.example .env
 
-# Option A: generate ENCRYPTION_KEY manually.
-node -e "console.log('ENCRYPTION_KEY=' + require('crypto').randomBytes(32).toString('hex'))" >> .env
+# Option A: replace ENCRYPTION_KEY=your-64-char-hex-key-here in .env with
+# a generated 64-char hex key:
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
-# Option B: on an empty non-production first install, the server can generate
-# ENCRYPTION_KEY into .env automatically before any Provider Keys exist.
+# Option B: on an empty non-production first install, leave the placeholder as-is.
+# The server can generate ENCRYPTION_KEY into .env automatically before any
+# Provider Keys exist.
 
 # Start server + dashboard together
 npm run dev
