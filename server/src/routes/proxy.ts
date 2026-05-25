@@ -216,6 +216,9 @@ export function isRetryableError(err: any): boolean {
     // provider in the fallback chain may have a larger limit. Same reasoning as 503.
     || msg.includes('413') || msg.includes('payload too large') || msg.includes('request body too large')
     || msg.includes('request entity too large') || msg.includes('content too large')
+    // Provider-specific 400s can mean one upstream rejected a parameter that
+    // another provider/model may accept. Keep bare "400 Bad Request" non-retryable.
+    || msg.includes('api error 400')
     // 404: model deprecated/removed upstream (e.g. OpenRouter's "no endpoints found"
     // for a model that's been pulled). Rotate to the next model in the chain —
     // setCooldown + the health checker will avoid this model on subsequent requests.
@@ -228,8 +231,7 @@ function getRouteSkipId(route: RouteResult): string {
 
 function getKeySkipId(route: RouteResult): string {
   return `${route.platform}:${route.modelId}:${route.keyId}`;
-}
-
+}\n
 proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   const start = Date.now();
 
