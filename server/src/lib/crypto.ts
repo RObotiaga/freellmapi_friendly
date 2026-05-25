@@ -105,7 +105,7 @@ function legacyDbKeyError(): Error {
     'ENCRYPTION_KEY is required.\n\n' +
     'A legacy DB-stored encryption key was found. It will not be used automatically outside explicit DEV_MODE=true.\n' +
     'Run this command to migrate it into .env:\n\n' +
-    '  npm run migrate:encryption-key -w server\n\n' +
+    '  npm run migrate-encryption-key -w server\n\n' +
     'The migration verifies enabled Provider Keys and removes the legacy DB-stored key only after successful verification.',
   );
 }
