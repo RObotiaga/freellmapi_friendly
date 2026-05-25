@@ -5,7 +5,7 @@ import { z } from 'zod';
 import type { ChatMessage } from '@freellmapi/shared/types.js';
 import { routeRequest, recordRateLimitHit, recordSuccess, type RouteResult } from '../services/router.js';
 import { recordRequest, recordTokens, setCooldown } from '../services/ratelimit.js';
-import { getDb, getUnifiedApiKey } from '../db/index.js';
+import { getAutoretryEnabled, getDb, getUnifiedApiKey } from '../db/index.js';
 import { contentToString } from '../lib/content.js';
 
 export const proxyRouter = Router();
@@ -222,6 +222,14 @@ export function isRetryableError(err: any): boolean {
     || msg.includes('404') || msg.includes('not found') || msg.includes('no endpoints found');
 }
 
+function getRouteSkipId(route: RouteResult): string {
+  return `${route.platform}:${route.modelDbId}`;
+}
+
+function getKeySkipId(route: RouteResult): string {
+  return `${route.platform}:${route.modelId}:${route.keyId}`;
+}
+
 proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   const start = Date.now();
 
@@ -250,6 +258,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   }
 
   const { model: requestedModel, temperature, max_tokens, top_p, stream, tools, tool_choice, parallel_tool_calls } = parsed.data;
+  const autoretryEnabled = getAutoretryEnabled();
   const messages: ChatMessage[] = parsed.data.messages.map((m): ChatMessage => {
     if (m.role === 'assistant') {
       return {
@@ -298,14 +307,24 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   // different model would be surprising to OpenAI-compatible clients.
   // Sticky-session is the fallback when no `model` field was sent at all.
   let preferredModel: number | undefined;
+  let allowedModelIds: Set<number> | undefined;
   if (isAutoModel(requestedModel)) {
     // Explicit "auto" → behave exactly like an omitted model field.
     preferredModel = getStickyModel(messages);
   } else if (requestedModel) {
     const db = getDb();
-    const enabled = db.prepare('SELECT id FROM models WHERE model_id = ? AND enabled = 1').get(requestedModel) as { id: number } | undefined;
-    if (enabled) {
-      preferredModel = enabled.id;
+    const enabledRows = db.prepare(`
+      SELECT m.id
+      FROM models m
+      LEFT JOIN fallback_config fc ON fc.model_db_id = m.id
+      WHERE m.model_id = ? AND m.enabled = 1
+      ORDER BY COALESCE(fc.priority, m.intelligence_rank) ASC, m.intelligence_rank ASC
+    `).all(requestedModel) as { id: number }[];
+    if (enabledRows.length > 0) {
+      preferredModel = enabledRows[0].id;
+      if (autoretryEnabled) {
+        allowedModelIds = new Set(enabledRows.map(row => row.id));
+      }
     } else {
       const disabled = db.prepare('SELECT id FROM models WHERE model_id = ?').get(requestedModel) as { id: number } | undefined;
       const reason = disabled ? 'is disabled' : 'is not in the catalog';
@@ -324,21 +343,38 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
 
   // Retry loop: on 429/rate limit, skip that model+key and try the next one
   const skipKeys = new Set<string>();
+  const skipRoutes = new Set<string>();
   let lastError: any = null;
+  let lastErrorWasTransient = false;
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     let route: RouteResult;
     try {
-      route = routeRequest(estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined, preferredModel);
+      route = routeRequest({
+        estimatedTokens: estimatedTotal,
+        skipKeys: skipKeys.size > 0 ? skipKeys : undefined,
+        skipRoutes: skipRoutes.size > 0 ? skipRoutes : undefined,
+        preferredModelDbId: preferredModel,
+        allowedModelIds,
+      });
     } catch (err: any) {
       // No more models available
       if (lastError) {
-        res.status(429).json({
-          error: {
-            message: `All models rate-limited. Last error: ${lastError.message}`,
-            type: 'rate_limit_error',
-          },
-        });
+        if (lastErrorWasTransient) {
+          res.status(429).json({
+            error: {
+              message: `All models rate-limited. Last error: ${lastError.message}`,
+              type: 'rate_limit_error',
+            },
+          });
+        } else {
+          res.status(502).json({
+            error: {
+              message: `Provider error: ${lastError.message}`,
+              type: 'provider_error',
+            },
+          });
+        }
       } else {
         res.status(err.status ?? 503).json({
           error: { message: err.message, type: 'routing_error' },
@@ -432,14 +468,27 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
       const latency = Date.now() - start;
       logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, err.message);
 
-      if (isRetryableError(err)) {
-        // Put this model+key on cooldown and try the next one
-        const skipId = `${route.platform}:${route.modelId}:${route.keyId}`;
-        skipKeys.add(skipId);
+      const transientRetryable = isRetryableError(err);
+
+      if (transientRetryable) {
+        if (autoretryEnabled) {
+          skipRoutes.add(getRouteSkipId(route));
+        } else {
+          skipKeys.add(getKeySkipId(route));
+        }
         setCooldown(route.platform, route.modelId, route.keyId, 120_000);
         recordRateLimitHit(route.modelDbId);
         lastError = err;
+        lastErrorWasTransient = true;
         console.log(`[Proxy] ${err.message.slice(0, 60)} from ${route.displayName}, falling back (attempt ${attempt + 1}/${MAX_RETRIES})`);
+        continue;
+      }
+
+      if (autoretryEnabled) {
+        skipRoutes.add(getRouteSkipId(route));
+        lastError = err;
+        lastErrorWasTransient = false;
+        console.log(`[Proxy] ${err.message.slice(0, 60)} from ${route.displayName}, autoretry route failover (attempt ${attempt + 1}/${MAX_RETRIES})`);
         continue;
       }
 
@@ -455,10 +504,20 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   }
 
   // Exhausted all retries
-  res.status(429).json({
+  if (lastErrorWasTransient) {
+    res.status(429).json({
+      error: {
+        message: `All models rate-limited after ${MAX_RETRIES} attempts. Last: ${lastError?.message}`,
+        type: 'rate_limit_error',
+      },
+    });
+    return;
+  }
+
+  res.status(502).json({
     error: {
-      message: `All models rate-limited after ${MAX_RETRIES} attempts. Last: ${lastError?.message}`,
-      type: 'rate_limit_error',
+      message: `Provider error: ${lastError?.message ?? 'All retry attempts failed'}`,
+      type: 'provider_error',
     },
   });
 });

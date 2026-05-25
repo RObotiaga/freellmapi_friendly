@@ -1251,3 +1251,35 @@ export function regenerateUnifiedKey(): string {
   db.prepare("UPDATE settings SET value = ? WHERE key = 'unified_api_key'").run(key);
   return key;
 }
+
+function getSetting(key: string): string | undefined {
+  const db = getDb();
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;
+  return row?.value;
+}
+
+function setSetting(key: string, value: string): void {
+  const db = getDb();
+  db.prepare(`
+    INSERT INTO settings (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(key, value);
+}
+
+export function getBooleanSetting(key: string, defaultValue = false): boolean {
+  const value = getSetting(key);
+  if (value == null) return defaultValue;
+  return value === '1' || value.toLowerCase() === 'true';
+}
+
+export function setBooleanSetting(key: string, value: boolean): void {
+  setSetting(key, value ? '1' : '0');
+}
+
+export function getAutoretryEnabled(): boolean {
+  return getBooleanSetting('autoretry_enabled', false);
+}
+
+export function setAutoretryEnabled(enabled: boolean): void {
+  setBooleanSetting('autoretry_enabled', enabled);
+}

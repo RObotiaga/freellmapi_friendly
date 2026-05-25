@@ -54,6 +54,10 @@ interface TokenUsageData {
   models: { displayName: string; platform: string; budget: number }[]
 }
 
+interface AutoretrySettings {
+  enabled: boolean
+}
+
 const platformColors: Record<string, string> = {
   google:      '#4285f4',
   groq:        '#f55036',
@@ -212,6 +216,11 @@ export default function FallbackPage() {
     queryFn: () => apiFetch('/api/fallback/token-usage'),
   })
 
+  const { data: autoretrySettings } = useQuery<AutoretrySettings>({
+    queryKey: ['settings', 'autoretry'],
+    queryFn: () => apiFetch('/api/settings/autoretry'),
+  })
+
   const saveMutation = useMutation({
     mutationFn: (data: { modelDbId: number; priority: number; enabled: boolean }[]) =>
       apiFetch('/api/fallback', { method: 'PUT', body: JSON.stringify(data) }),
@@ -227,6 +236,17 @@ export default function FallbackPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['fallback'] })
       setLocalEntries(null)
+    },
+  })
+
+  const autoretryMutation = useMutation({
+    mutationFn: (enabled: boolean) =>
+      apiFetch<AutoretrySettings>('/api/settings/autoretry', {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings', 'autoretry'] })
     },
   })
 
@@ -294,6 +314,22 @@ export default function FallbackPage() {
       />
 
       <div className="space-y-6">
+        <section className="rounded-lg border bg-card p-5">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="text-sm font-medium">Autoretry</h2>
+              <p className="text-xs text-muted-foreground mt-1">
+                If a provider fails before returning any model output, freellmapi silently retries the next route.
+              </p>
+            </div>
+            <Switch
+              checked={autoretrySettings?.enabled ?? false}
+              disabled={!autoretrySettings || autoretryMutation.isPending}
+              onCheckedChange={(checked) => autoretryMutation.mutate(Boolean(checked))}
+            />
+          </div>
+        </section>
+
         {tokenUsage && tokenUsage.totalBudget > 0 && (
           <TokenUsageBar data={tokenUsage} />
         )}

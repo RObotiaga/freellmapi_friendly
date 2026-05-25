@@ -41,6 +41,14 @@ export interface RouteResult {
   displayName: string;
 }
 
+interface RouteRequestOptions {
+  estimatedTokens?: number;
+  skipKeys?: Set<string>;
+  skipRoutes?: Set<string>;
+  preferredModelDbId?: number;
+  allowedModelIds?: Set<number>;
+}
+
 // Round-robin index per platform
 const roundRobinIndex = new Map<string, number>();
 
@@ -131,7 +139,25 @@ export function getAllPenalties(): Array<{ modelDbId: number; count: number; pen
  * @param skipKeys - set of "platform:modelId:keyId" to skip (failed on this request)
  * @param preferredModelDbId - try this model first (sticky session)
  */
-export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, preferredModelDbId?: number): RouteResult {
+export function routeRequest(
+  optionsOrEstimatedTokens: RouteRequestOptions | number = 1000,
+  legacySkipKeys?: Set<string>,
+  legacyPreferredModelDbId?: number,
+): RouteResult {
+  const options: RouteRequestOptions =
+    typeof optionsOrEstimatedTokens === 'number'
+      ? {
+          estimatedTokens: optionsOrEstimatedTokens,
+          skipKeys: legacySkipKeys,
+          preferredModelDbId: legacyPreferredModelDbId,
+        }
+      : optionsOrEstimatedTokens;
+
+  const estimatedTokens = options.estimatedTokens ?? 1000;
+  const skipKeys = options.skipKeys;
+  const skipRoutes = options.skipRoutes;
+  const preferredModelDbId = options.preferredModelDbId;
+  const allowedModelIds = options.allowedModelIds;
   const db = getDb();
 
   // Get fallback chain ordered by priority
@@ -158,10 +184,14 @@ export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, pre
 
   for (const entry of sortedChain) {
     if (!entry.enabled) continue;
+    if (allowedModelIds && !allowedModelIds.has(entry.model_db_id)) continue;
 
     // Get model details
     const model = db.prepare('SELECT * FROM models WHERE id = ? AND enabled = 1').get(entry.model_db_id) as ModelRow | undefined;
     if (!model) continue;
+
+    const routeSkipId = `${model.platform}:${model.id}`;
+    if (skipRoutes?.has(routeSkipId)) continue;
 
     // Check if we have a provider for this platform
     const provider = getProvider(model.platform as any);
