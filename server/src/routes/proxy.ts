@@ -231,7 +231,8 @@ function getRouteSkipId(route: RouteResult): string {
 
 function getKeySkipId(route: RouteResult): string {
   return `${route.platform}:${route.modelId}:${route.keyId}`;
-}\n
+}
+
 proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   const start = Date.now();
 
