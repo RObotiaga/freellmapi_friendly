@@ -52,6 +52,21 @@ An error on a **Provider Key** is not enough to decide whether the key is invali
 **Development mode**:
 Development mode means the operator explicitly opted into local-only conveniences. It is not an implicit runtime default and must not silently weaken normal startup behavior.
 
+## Implementation status
+
+**PR87 encryption-key storage hardening**:
+Implemented in this fork. Normal startup uses `ENCRYPTION_KEY` from `.env` or deployment secrets. The normal Encryption Key is no longer generated into SQLite. Legacy `settings.encryption_key` is treated as migration state and is not used silently outside explicit `DEV_MODE=true` outside production.
+
+The migration command is:
+
+```bash
+npm run migrate-encryption-key -w server
+```
+
+The command supports `--dry-run`, `--db-path`, and `--env-path`. It does not print the Encryption Key, verifies enabled Provider Keys locally, and removes the legacy SQLite key only after successful verification.
+
+An empty non-production first install may create `ENCRYPTION_KEY` in `.env` before any Provider Keys exist. Tests were verified after implementation: root `npm test` passes; server test suite reports 153/153 tests passing; client participates through its `test` script, which runs build. The remaining Vite large chunk warning is non-blocking and unrelated to PR87.
+
 ## Example dialogue
 
 Developer: “A Provider Key failed locally before the request reached the Provider. Should the router stop?”
