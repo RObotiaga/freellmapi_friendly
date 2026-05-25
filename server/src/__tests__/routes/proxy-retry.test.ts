@@ -16,6 +16,18 @@ describe('isRetryableError', () => {
     });
   });
 
+  describe('provider-specific 400 errors', () => {
+    it('treats OpenAI-compatible provider "API error 400" messages as retryable', () => {
+      expect(isRetryableError(new Error('Groq API error 400: max_tokens must be between 1 and 4096'))).toBe(true);
+      expect(isRetryableError(new Error('Mistral API error 400: unsupported parameter'))).toBe(true);
+    });
+
+    it('keeps bare client-side 400 validation errors non-retryable', () => {
+      expect(isRetryableError(new Error('400 Bad Request'))).toBe(false);
+      expect(isRetryableError(new Error('Invalid request: Expected string, received array'))).toBe(false);
+    });
+  });
+
   describe('404 model removed / not found (the bug #66 fixes)', () => {
     it('treats explicit "404" in the error message as retryable', () => {
       expect(isRetryableError(new Error('OpenRouter API error 404: Provider returned error'))).toBe(true);
