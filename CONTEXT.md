@@ -28,6 +28,10 @@ _Avoid_: disabled key, deleted key.
 The operator-controlled secret used to protect stored **Provider Keys**. It is part of the deployment boundary, not part of the Provider Key data itself.
 _Avoid_: provider key, unified key, client key.
 
+**Legacy DB-stored Encryption Key**:
+An **Encryption Key** found in an existing local database from older startup behavior. It is a migration state that requires operator action, not a normal runtime source of trust.
+_Avoid_: default encryption key, production encryption key.
+
 **Development Encryption Fallback**:
 A local-only convenience mode that allows the system to keep an **Encryption Key** in local storage for development or tests. It must be explicitly enabled and is not the normal startup mode.
 _Avoid_: default encryption, production fallback.
@@ -57,3 +61,7 @@ Domain expert: “No. Treat it as a Rate-limited Provider Key. It may become usa
 Developer: “Should local development automatically mean the Encryption Key can live beside Provider Keys?”
 
 Domain expert: “Only when the operator explicitly enables the Development Encryption Fallback. Normal startup should require an operator-controlled Encryption Key.”
+
+Developer: “If an older database already contains an Encryption Key, should the system keep using it silently?”
+
+Domain expert: “No. Treat it as a Legacy DB-stored Encryption Key and require the operator to migrate it into the deployment environment.”
