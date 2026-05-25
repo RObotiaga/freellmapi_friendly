@@ -17,7 +17,7 @@ A **Provider Key** that the operator intentionally excludes from routing.
 _Avoid_: broken key, invalid key.
 
 **Unusable Provider Key**:
-A **Provider Key** that cannot currently participate in routing even though the operator did not explicitly disable it. It should not block the router from trying other keys or model routes.
+A **Provider Key** that cannot currently participate in routing even though the operator did not explicitly disable it. It should be visible to the operator as needing attention, but it should not block the router from trying other keys or model routes.
 _Avoid_: disabled key, deleted key.
 
 **Fallback Chain**:
