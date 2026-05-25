@@ -96,4 +96,44 @@ describe('Router', () => {
     const result = routeRequest();
     expect(result.platform).toBe('groq');
   });
+
+  it('should skip keys that cannot be decrypted and use a valid fallback key', () => {
+    const db = getDb();
+
+    db.prepare(`
+      INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run('google', 'corrupt', 'not-hex', 'not-hex', 'not-hex', 'healthy', 1);
+
+    const groqKey = encrypt('test-groq-key');
+    db.prepare(`
+      INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run('groq', 'test', groqKey.encrypted, groqKey.iv, groqKey.authTag, 'healthy', 1);
+
+    const result = routeRequest();
+    const corruptKey = db.prepare("SELECT status, enabled, last_checked_at FROM api_keys WHERE label = 'corrupt'")
+      .get() as { status: string; enabled: number; last_checked_at: string | null };
+
+    expect(result.platform).toBe('groq');
+    expect(result.apiKey).toBe('test-groq-key');
+    expect(corruptKey.status).toBe('error');
+    expect(corruptKey.enabled).toBe(1);
+    expect(corruptKey.last_checked_at).not.toBeNull();
+  });
+
+  it('should keep routable keys with error status if they can be decrypted', () => {
+    const db = getDb();
+
+    const groqKey = encrypt('test-groq-key');
+    db.prepare(`
+      INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run('groq', 'temporary-error', groqKey.encrypted, groqKey.iv, groqKey.authTag, 'error', 1);
+
+    const result = routeRequest();
+
+    expect(result.platform).toBe('groq');
+    expect(result.apiKey).toBe('test-groq-key');
+  });
 });
