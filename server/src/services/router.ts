@@ -197,7 +197,8 @@ export function routeRequest(
     const provider = getProvider(model.platform as any);
     if (!provider) continue;
 
-    // Get all healthy, enabled keys for this platform
+    // Get all enabled keys for this platform except confirmed invalid keys.
+    // Keep status='error' routable: it can be temporary provider/transport/quota state.
     const keys = db.prepare(
       'SELECT * FROM api_keys WHERE platform = ? AND enabled = 1 AND status != ?'
     ).all(model.platform, 'invalid') as KeyRow[];
@@ -229,9 +230,17 @@ export function routeRequest(
       if (!canMakeRequest(model.platform, model.model_id, key.id, limits)) continue;
       if (!canUseTokens(model.platform, model.model_id, key.id, estimatedTokens, limits)) continue;
 
+      let decryptedKey: string;
+      try {
+        decryptedKey = decrypt(key.encrypted_key, key.iv, key.auth_tag);
+      } catch {
+        db.prepare("UPDATE api_keys SET status = 'error', last_checked_at = datetime('now') WHERE id = ?")
+          .run(key.id);
+        continue;
+      }
+
       // We found a working key for this model!
       roundRobinIndex.set(rrKey, idx);
-      const decryptedKey = decrypt(key.encrypted_key, key.iv, key.auth_tag);
 
       return {
         provider,
