@@ -16,6 +16,11 @@ fallbackRouter.get('/', (_req: Request, res: Response) => {
            m.monthly_token_budget
     FROM fallback_config fc
     JOIN models m ON m.id = fc.model_db_id
+    WHERE EXISTS (
+      SELECT 1
+      FROM api_keys ak
+      WHERE ak.platform = m.platform AND ak.enabled = 1
+    )
     ORDER BY fc.priority ASC
   `).all() as any[];
 
@@ -69,6 +74,27 @@ fallbackRouter.put('/', (req: Request, res: Response) => {
   }
 
   const db = getDb();
+
+  // Разрешаем обновлять только модели платформ, у которых есть включённые ключи.
+  const allowedRows = db.prepare(`
+    SELECT m.id
+    FROM models m
+    WHERE EXISTS (
+      SELECT 1
+      FROM api_keys ak
+      WHERE ak.platform = m.platform AND ak.enabled = 1
+    )
+  `).all() as { id: number }[];
+  const allowedModelIds = new Set(allowedRows.map(r => r.id));
+
+  const hasForbiddenModel = parsed.data.some(entry => !allowedModelIds.has(entry.modelDbId));
+  if (hasForbiddenModel) {
+    res.status(400).json({
+      error: { message: 'One or more models are unavailable because their platform is disabled' },
+    });
+    return;
+  }
+
   const update = db.prepare(`
     UPDATE fallback_config SET priority = ?, enabled = ? WHERE model_db_id = ?
   `);

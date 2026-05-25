@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import type { Express } from 'express';
 import { createApp } from '../../app.js';
-import { initDb } from '../../db/index.js';
+import { initDb, getDb } from '../../db/index.js';
 
 async function request(app: Express, method: string, path: string, body?: any) {
   const server = app.listen(0);
@@ -26,6 +26,12 @@ describe('Fallback API', () => {
     process.env.ENCRYPTION_KEY = '0'.repeat(64);
     initDb(':memory:');
     app = createApp();
+  });
+
+  beforeEach(() => {
+    const db = getDb();
+    db.prepare('DELETE FROM api_keys').run();
+    db.prepare("INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled) VALUES ('groq', 'test', 'enc', 'iv', 'tag', 'healthy', 1)").run();
   });
 
   it('GET /api/fallback returns fallback chain', async () => {
@@ -96,6 +102,29 @@ describe('Fallback API', () => {
     for (let i = 1; i < body.length; i++) {
       expect(body[i].speedRank).toBeGreaterThanOrEqual(body[i - 1].speedRank);
     }
+  });
+
+  it('GET /api/fallback returns empty list when no enabled platform keys exist', async () => {
+    const db = getDb();
+    db.prepare('DELETE FROM api_keys').run();
+
+    const { status, body } = await request(app, 'GET', '/api/fallback');
+    expect(status).toBe(200);
+    expect(body).toEqual([]);
+  });
+
+  it('PUT /api/fallback rejects models from disabled platforms', async () => {
+    const db = getDb();
+    const target = db.prepare("SELECT id FROM models WHERE platform = 'google' LIMIT 1").get() as { id: number } | undefined;
+    expect(target).toBeTruthy();
+
+    const { status } = await request(app, 'PUT', '/api/fallback', [{
+      modelDbId: target!.id,
+      priority: 1,
+      enabled: true,
+    }]);
+
+    expect(status).toBe(400);
   });
 
   it('POST /api/fallback/sort/invalid returns 400', async () => {

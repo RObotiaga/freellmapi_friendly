@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { PageHeader } from '@/components/page-header'
 import type { ApiKey, Platform } from '../../../shared/types'
 
@@ -163,6 +164,20 @@ export default function KeysPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['keys'] })
       queryClient.invalidateQueries({ queryKey: ['health'] })
+      queryClient.invalidateQueries({ queryKey: ['fallback'] })
+    },
+  })
+
+  const toggleKey = useMutation({
+    mutationFn: ({ id, enabled }: { id: number; enabled: boolean }) =>
+      apiFetch(`/api/keys/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['keys'] })
+      queryClient.invalidateQueries({ queryKey: ['health'] })
+      queryClient.invalidateQueries({ queryKey: ['fallback'] })
     },
   })
 
@@ -304,6 +319,17 @@ export default function KeysPage() {
                           {k.label && <span className="text-xs text-muted-foreground">{k.label}</span>}
                           <span className="text-xs text-muted-foreground">{statusLabel[status] ?? status}</span>
                           <div className="flex-1" />
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-muted-foreground">{k.enabled ? 'On' : 'Off'}</span>
+                            <Switch
+                              size="sm"
+                              checked={k.enabled}
+                              disabled={toggleKey.isPending}
+                              onCheckedChange={(checked) => {
+                                toggleKey.mutate({ id: k.id, enabled: Boolean(checked) })
+                              }}
+                            />
+                          </div>
                           {lastChecked && (
                             <span className="text-[11px] text-muted-foreground tabular-nums">
                               {new Date(lastChecked).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
