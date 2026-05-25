@@ -36,6 +36,10 @@ _Avoid_: default encryption key, production encryption key.
 A local-only convenience mode that allows the system to keep an **Encryption Key** in local storage for development or tests. It must be explicitly enabled and is not the normal startup mode.
 _Avoid_: default encryption, production fallback.
 
+**First-run Encryption Bootstrap**:
+A first-start convenience that creates an **Encryption Key** in the deployment environment when there are no existing **Provider Keys** and no legacy encryption state. It is not a **Development Encryption Fallback** because the Encryption Key is not stored beside Provider Keys in the database.
+_Avoid_: development fallback, DB-stored key generation.
+
 **Fallback Chain**:
 The ordered set of model routes the router may try for a request. The chain expresses routing preference, not a guarantee that every route is usable at runtime.
 _Avoid_: model list, provider list.
@@ -65,3 +69,7 @@ Domain expert: “Only when the operator explicitly enables the Development Encr
 Developer: “If an older database already contains an Encryption Key, should the system keep using it silently?”
 
 Domain expert: “No. Treat it as a Legacy DB-stored Encryption Key and require the operator to migrate it into the deployment environment.”
+
+Developer: “Can an empty first install create its own Encryption Key?”
+
+Domain expert: “Yes, through First-run Encryption Bootstrap, but only into the deployment environment and only before Provider Keys exist.”
