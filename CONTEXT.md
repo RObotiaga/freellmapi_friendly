@@ -24,6 +24,14 @@ _Avoid_: invalid key, disabled key, broken key.
 A **Provider Key** that cannot currently participate in routing even though the operator did not explicitly disable it. It should be visible to the operator as needing attention, but it should not block the router from trying other keys or model routes.
 _Avoid_: disabled key, deleted key.
 
+**Encryption Key**:
+The operator-controlled secret used to protect stored **Provider Keys**. It is part of the deployment boundary, not part of the Provider Key data itself.
+_Avoid_: provider key, unified key, client key.
+
+**Development Encryption Fallback**:
+A local-only convenience mode that allows the system to keep an **Encryption Key** in local storage for development or tests. It must be explicitly enabled and is not the normal startup mode.
+_Avoid_: default encryption, production fallback.
+
 **Fallback Chain**:
 The ordered set of model routes the router may try for a request. The chain expresses routing preference, not a guarantee that every route is usable at runtime.
 _Avoid_: model list, provider list.
@@ -32,6 +40,9 @@ _Avoid_: model list, provider list.
 
 **Provider Key error**:
 An error on a **Provider Key** is not enough to decide whether the key is invalid, disabled, rate-limited, or unusable. Routing decisions must preserve that distinction unless the operator or a later check confirms a narrower state.
+
+**Development mode**:
+Development mode means the operator explicitly opted into local-only conveniences. It is not an implicit runtime default and must not silently weaken normal startup behavior.
 
 ## Example dialogue
 
@@ -42,3 +53,7 @@ Domain expert: “No. Treat that key as an Unusable Provider Key for routing and
 Developer: “A Provider Key hit a quota window. Should the router stop trying it forever?”
 
 Domain expert: “No. Treat it as a Rate-limited Provider Key. It may become usable again when the quota window resets.”
+
+Developer: “Should local development automatically mean the Encryption Key can live beside Provider Keys?”
+
+Domain expert: “Only when the operator explicitly enables the Development Encryption Fallback. Normal startup should require an operator-controlled Encryption Key.”
