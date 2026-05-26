@@ -1,29 +1,34 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
+
 import { getDb } from '../db/index.js';
-import { hasProvider } from '../providers/index.js';
 
 export const modelsRouter = Router();
 
-// List all models with availability info
+// Public model catalog. Keep this route free of runtime Provider capability,
+// Provider Key availability, fallback priority, and fallback enablement.
 modelsRouter.get('/', (_req: Request, res: Response) => {
   const db = getDb();
+
   const models = db.prepare(`
-    SELECT m.*, fc.priority, fc.enabled as fallback_enabled
-    FROM models m
-    LEFT JOIN fallback_config fc ON fc.model_db_id = m.id
-    ORDER BY COALESCE(fc.priority, m.intelligence_rank) ASC
+    SELECT
+      id,
+      platform,
+      model_id,
+      display_name,
+      intelligence_rank,
+      speed_rank,
+      size_label,
+      rpm_limit,
+      rpd_limit,
+      tpm_limit,
+      tpd_limit,
+      monthly_token_budget,
+      context_window,
+      enabled
+    FROM models
+    ORDER BY intelligence_rank ASC, speed_rank ASC, display_name ASC
   `).all() as any[];
-
-  // Count keys per platform
-  const keyCounts = db.prepare(`
-    SELECT platform, COUNT(*) as count
-    FROM api_keys
-    WHERE enabled = 1
-    GROUP BY platform
-  `).all() as { platform: string; count: number }[];
-
-  const keyCountMap = new Map(keyCounts.map(k => [k.platform, k.count]));
 
   const result = models.map(m => ({
     id: m.id,
@@ -40,10 +45,6 @@ modelsRouter.get('/', (_req: Request, res: Response) => {
     monthlyTokenBudget: m.monthly_token_budget,
     contextWindow: m.context_window,
     enabled: m.enabled === 1,
-    priority: m.priority,
-    fallbackEnabled: m.fallback_enabled === 1,
-    hasProvider: hasProvider(m.platform),
-    keyCount: keyCountMap.get(m.platform) ?? 0,
   }));
 
   res.json(result);
