@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
@@ -197,14 +198,72 @@ function UnlockPanel({ onUnlocked }: { onUnlocked: () => void }) {
 }
 
 function CenteredPanel({ title, children }: { title: string; children: React.ReactNode }) {
+  const [dark, setDark] = useState(() =>
+    typeof window !== 'undefined' && document.documentElement.classList.contains('dark')
+  );
+
+  useEffect(() => {
+    setDark(document.documentElement.classList.contains('dark'));
+  }, []);
+
+  function toggleTheme() {
+    const next = !dark;
+
+    setDark(next);
+    document.documentElement.classList.toggle('dark', next);
+    localStorage.setItem('theme', next ? 'dark' : 'light');
+  }
+
   return (
-    <main className="min-h-screen bg-background flex items-center justify-center px-6">
-      <section className="w-full max-w-md rounded-2xl border bg-card p-6 shadow-sm space-y-4">
-        <div className="space-y-1">
-          <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">FreeLLMAPI</p>
-          <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+    <main className="min-h-screen bg-background">
+      <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur">
+        <div className="mx-auto flex max-w-6xl items-center px-6">
+          <div className="flex items-center gap-2 py-4">
+            <span className="inline-block size-2 rounded-full bg-foreground" />
+            <span className="text-sm font-semibold tracking-tight">FreeLLMAPI</span>
+          </div>
+          <div className="ml-auto py-2">
+            <Button variant="ghost" size="sm" onClick={toggleTheme} aria-label="Toggle theme">
+              {dark ? (
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="4" />
+                  <path d="M12 2v2" />
+                  <path d="M12 20v2" />
+                  <path d="m4.93 4.93 1.41 1.41" />
+                  <path d="m17.66 17.66 1.41 1.41" />
+                  <path d="M2 12h2" />
+                  <path d="M20 12h2" />
+                  <path d="m6.34 17.66-1.41 1.41" />
+                  <path d="m19.07 4.93-1.41 1.41" />
+                </svg>
+              ) : (
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
+                </svg>
+              )}
+            </Button>
+          </div>
         </div>
-        {children}
+      </header>
+
+      <section className="relative overflow-hidden">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(120,120,120,0.12),transparent_40%)] dark:bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.08),transparent_35%)]" />
+        <div className="relative mx-auto flex min-h-[calc(100vh-57px)] max-w-6xl items-center justify-center px-6 py-12">
+          <Card className="w-full max-w-xl border-border/70 shadow-xl shadow-black/5 dark:shadow-black/20">
+            <CardHeader className="gap-2 border-b">
+              <div className="space-y-1">
+                <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Admin Control Surface</p>
+                <CardTitle className="text-2xl tracking-tight">{title}</CardTitle>
+                <CardDescription>
+                  Access to keys, routing, settings, health, and analytics is protected by a dedicated Admin Token.
+                </CardDescription>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4 pt-5">
+              {children}
+            </CardContent>
+          </Card>
+        </div>
       </section>
     </main>
   );

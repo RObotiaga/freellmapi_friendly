@@ -119,3 +119,47 @@ Domain expert: “Yes, through First-run Encryption Bootstrap, but only into the
 Developer: “Can localhost dashboard requests skip Admin Token authentication?”
 
 Domain expert: “No. Localhost may allow first-run setup for a short window, but protected admin routes must still require the dedicated Admin Token.”
+
+## Local run in current environment
+
+This repository is currently used from WSL, but the reliable runtime is the
+Windows Node.js installation at `C:\Program Files\nodejs\node.exe`.
+
+The fastest working local start from this environment is:
+
+```bash
+NPMSCRIPT=$(wslpath -w '/mnt/c/Program Files/nodejs/node_modules/npm/bin/npm-cli.js')
+'/mnt/c/Program Files/nodejs/node.exe' "$NPMSCRIPT" run dev
+```
+
+If `npm run dev` is unstable in the background, start server and client
+separately from WSL with Windows paths:
+
+```bash
+# server
+cd server
+SCRIPT=$(wslpath -w ../node_modules/tsx/dist/cli.mjs)
+'/mnt/c/Program Files/nodejs/node.exe' "$SCRIPT" watch src/index.ts
+
+# client
+cd client
+SCRIPT=$(wslpath -w ../node_modules/vite/bin/vite.js)
+'/mnt/c/Program Files/nodejs/node.exe' "$SCRIPT"
+```
+
+Expected local addresses:
+
+- Dashboard: `http://localhost:5173/playground`
+- API ping: `http://localhost:3001/api/ping`
+- OpenAI-compatible proxy: `http://localhost:3001/v1/chat/completions`
+
+Current local logs are usually written to:
+
+- `.codex-run/server.log`
+- `.codex-run/client.log`
+
+Important local caveat:
+
+- WSL HTTP checks to `localhost:5173` may time out even when Vite is healthy.
+  When that happens, verify the dashboard from Windows-side HTTP tooling or a
+  browser instead of assuming the frontend failed to start.

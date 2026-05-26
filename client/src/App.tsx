@@ -12,6 +12,17 @@ import AnalyticsPage from '@/pages/AnalyticsPage';
 
 const queryClient = new QueryClient();
 
+function applyStoredTheme() {
+  if (typeof window === 'undefined') return false;
+
+  const stored = localStorage.getItem('theme');
+  const shouldUseDark =
+    stored === 'dark' || (!stored && window.matchMedia('(prefers-color-scheme: dark)').matches);
+
+  document.documentElement.classList.toggle('dark', shouldUseDark);
+  return shouldUseDark;
+}
+
 function NavItem({ to, children }: { to: string; children: React.ReactNode }) {
   return (
     <NavLink
@@ -35,12 +46,7 @@ function DarkModeToggle() {
   );
 
   useEffect(() => {
-    const stored = localStorage.getItem('theme');
-
-    if (stored === 'dark' || (!stored && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-      document.documentElement.classList.add('dark');
-      setDark(true);
-    }
+    setDark(applyStoredTheme());
   }, []);
 
   function toggle() {
@@ -117,6 +123,10 @@ function DashboardShell() {
 }
 
 function App() {
+  useEffect(() => {
+    applyStoredTheme();
+  }, []);
+
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter basename={import.meta.env.BASE_URL}>
