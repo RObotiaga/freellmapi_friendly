@@ -47,11 +47,9 @@ describe('Full Integration Flow', () => {
     // migration accidentally drops a chunk we want to know.
     expect(body.length).toBeGreaterThanOrEqual(50);
     expect(body[0]).toHaveProperty('modelId');
-    expect(body[0]).toHaveProperty('hasProvider');
-    // All should have providers (catches drift between catalog and providers/index.ts)
-    for (const m of body) {
-      expect(m.hasProvider).toBe(true);
-    }
+    // Public catalog stays provider-agnostic; admin/provider wiring is covered
+    // by dedicated admin-auth and catalog/provider consistency tests.
+    expect(body[0]).not.toHaveProperty('hasProvider');
   });
 
   it('Step 2: Verify fallback chain is empty when no platforms are enabled', async () => {
