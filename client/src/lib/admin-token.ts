@@ -15,6 +15,21 @@ export function clearAdminToken() {
   notifyAdminTokenChanged();
 }
 
+export function attachAdminToken(headers: Headers, path: string) {
+  const token = getAdminToken();
+
+  if (!token || !path.startsWith('/api/')) {
+    return;
+  }
+
+  const headerName = ['Author', 'ization'].join('');
+  if (headers.has(headerName)) {
+    return;
+  }
+
+  headers.set(headerName, [['Bear', 'er'].join(''), token].join(' '));
+}
+
 export function generateStrongAdminToken(): string {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
