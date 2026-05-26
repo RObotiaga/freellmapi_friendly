@@ -40,6 +40,30 @@ _Avoid_: default encryption, production fallback.
 A first-start convenience that creates an **Encryption Key** in the deployment environment when there are no existing **Provider Keys** and no legacy encryption state. It is not a **Development Encryption Fallback** because the Encryption Key is not stored beside Provider Keys in the database.
 _Avoid_: development fallback, DB-stored key generation.
 
+**Admin Control Surface**:
+Routes and UI actions that let the operator inspect or change Provider Keys, fallback routing, health checks, analytics, or deployment settings. It is separate from the OpenAI-compatible Proxy Surface.
+_Avoid_: proxy API, public API.
+
+**Admin Token**:
+The operator-controlled `ADMIN_TOKEN` used to unlock the dashboard and protected admin API. It is separate from the unified `/v1` API key and is supplied through `.env` or deployment secrets.
+_Avoid_: unified key, provider key, encryption key.
+
+**First-run Admin Setup**:
+A Portainer-style first-start convenience for fresh local installs where `ADMIN_TOKEN` is absent. For the first 5 minutes after startup, only on localhost and only when `.env` is writable, the dashboard may let the operator create the initial Admin Token and persist it to `.env`.
+_Avoid_: dev bypass, localhost bypass.
+
+**Admin Locked Mode**:
+The state used when `ADMIN_TOKEN` is missing and First-run Admin Setup is unavailable, expired, or cannot persist the token. `/v1/*`, `/api/ping`, and public catalog `/api/models` may continue working, but protected admin routes return `503`.
+_Avoid_: unauthenticated admin mode.
+
+**Network Exposure Policy**:
+The server binds to `127.0.0.1` by default in all runtime modes. Public binding requires explicit `HOST=0.0.0.0`. `DEV_MODE` must not weaken admin authentication, create localhost auth bypasses, or change network exposure defaults.
+_Avoid_: public by default.
+
+**Public Model Catalog Policy**:
+`GET /api/models` remains public but returns only static/catalog model fields. It must not expose runtime Provider capability, Provider Key availability, fallback priority, or fallback enablement.
+_Avoid_: public dashboard state.
+
 **Fallback Chain**:
 The ordered set of model routes the router may try for a request. The chain expresses routing preference, not a guarantee that every route is usable at runtime.
 _Avoid_: model list, provider list.
@@ -67,6 +91,9 @@ The command supports `--dry-run`, `--db-path`, and `--env-path`. It does not pri
 
 An empty non-production first install may create `ENCRYPTION_KEY` in `.env` before any Provider Keys exist. Tests were verified after implementation: root `npm test` passes; server test suite reports 153/153 tests passing; client participates through its `test` script, which runs build. The remaining Vite large chunk warning is non-blocking and unrelated to PR87.
 
+**PR54-style admin protection**:
+Implemented in this fork with a stricter friendly policy. Protected admin routes require a dedicated `ADMIN_TOKEN`; the unified `/v1` API key is not accepted as an admin credential. There is no localhost bypass and no `DEV_MODE` bypass. Fresh local installs may use First-run Admin Setup for 5 minutes when bound to localhost and when `.env` is writable. Public `/api/models` is catalog-only. `/api/ping` remains public. The server binds to `127.0.0.1` by default; public binding requires explicit `HOST=0.0.0.0`.
+
 ## Example dialogue
 
 Developer: “A Provider Key failed locally before the request reached the Provider. Should the router stop?”
@@ -88,3 +115,7 @@ Domain expert: “No. Treat it as a Legacy DB-stored Encryption Key and require 
 Developer: “Can an empty first install create its own Encryption Key?”
 
 Domain expert: “Yes, through First-run Encryption Bootstrap, but only into the deployment environment and only before Provider Keys exist.”
+
+Developer: “Can localhost dashboard requests skip Admin Token authentication?”
+
+Domain expert: “No. Localhost may allow first-run setup for a short window, but protected admin routes must still require the dedicated Admin Token.”
