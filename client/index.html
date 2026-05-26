@@ -5,6 +5,38 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>FreeLLMAPI · Unified LLM Router</title>
+    <script>
+      (() => {
+        const stored = localStorage.getItem('theme');
+        const dark = stored === 'dark' || (!stored && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        const root = document.documentElement;
+
+        root.classList.toggle('dark', dark);
+        root.style.colorScheme = dark ? 'dark' : 'light';
+        root.style.backgroundColor = dark ? 'oklch(0.135 0 0)' : 'oklch(0.995 0 0)';
+        document.addEventListener('DOMContentLoaded', () => {
+          document.body.style.backgroundColor = dark ? 'oklch(0.135 0 0)' : 'oklch(0.995 0 0)';
+        }, { once: true });
+      })();
+    </script>
+    <style>
+      html,
+      body,
+      #root {
+        min-height: 100%;
+      }
+
+      html,
+      body {
+        margin: 0;
+        background: oklch(0.995 0 0);
+      }
+
+      html.dark,
+      html.dark body {
+        background: oklch(0.135 0 0);
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
