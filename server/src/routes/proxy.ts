@@ -268,11 +268,23 @@ function responseForExhaustedFailures(
   failures: { contextTooLarge: number; rateLimited: number; transient: number; provider: number },
   lastError: any,
 ) {
-  if (failures.contextTooLarge > 0) {
+  const hadUpstreamProviderFailure = failures.transient > 0 || failures.provider > 0;
+
+  // 413 only wins for pure context-fit exhaustion. If any upstream provider
+  // call actually failed, report the provider failure instead of masking it
+  // as a context-window problem.
+  if (
+    failures.contextTooLarge > 0 &&
+    failures.rateLimited === 0 &&
+    !hadUpstreamProviderFailure
+  ) {
     return { status: 413, type: 'invalid_request_error', message: `Request is too large for all eligible model routes. Last error: ${lastError?.message ?? 'context limit exceeded'}` };
   }
   if (failures.rateLimited > 0) {
     return { status: 429, type: 'rate_limit_error', message: `All models rate-limited. Last error: ${lastError?.message ?? 'rate limit exceeded'}` };
+  }
+  if (hadUpstreamProviderFailure) {
+    return { status: 502, type: 'provider_error', message: `Provider error: ${lastError?.message ?? 'Upstream provider failure after retries'}` };
   }
   return { status: 503, type: 'provider_error', message: `Provider error: ${lastError?.message ?? 'No usable model route is currently available'}` };
 }
