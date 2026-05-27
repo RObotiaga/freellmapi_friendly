@@ -3,7 +3,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { ChatMessage } from '@freellmapi/shared/types.js';
-import { routeRequest, recordRateLimitHit, recordSuccess, type RouteResult } from '../services/router.js';
+import { routeRequest, recordRateLimitHit, recordSuccess, type PreferredModelSource, type RouteResult } from '../services/router.js';
 import { recordRequest, recordTokens, setCooldown } from '../services/ratelimit.js';
 import { getAutoretryEnabled, getDb, getUnifiedApiKey } from '../db/index.js';
 import { contentToString } from '../lib/content.js';
@@ -204,25 +204,77 @@ const chatCompletionSchema = z.object({
   parallel_tool_calls: z.boolean().optional(),
 });
 
-export function isRetryableError(err: any): boolean {
+type RetryableFailureKind = 'rate_limit' | 'context_too_large' | 'transient';
+
+export function getRetryableFailureKind(err: any): RetryableFailureKind | null {
   const msg = (err.message ?? '').toLowerCase();
-  return msg.includes('429') || msg.includes('rate limit') || msg.includes('too many requests')
-    || msg.includes('quota') || msg.includes('resource_exhausted')
-    || msg.includes('aborted') || msg.includes('timeout') || msg.includes('etimedout')
-    || msg.includes('econnrefused') || msg.includes('econnreset')
-    || msg.includes('503') || msg.includes('unavailable')
-    || msg.includes('500') || msg.includes('internal server error')
-    // 413: this model's payload limit is too small for the request, but another
-    // provider in the fallback chain may have a larger limit. Same reasoning as 503.
-    || msg.includes('413') || msg.includes('payload too large') || msg.includes('request body too large')
-    || msg.includes('request entity too large') || msg.includes('content too large')
+
+  // This model's payload/context limit is too small for the request, but another
+  // route in the fallback chain may fit. This is not a quota/rate-limit signal.
+  if (
+    msg.includes('413') ||
+    msg.includes('payload too large') ||
+    msg.includes('request body too large') ||
+    msg.includes('request entity too large') ||
+    msg.includes('content too large') ||
+    msg.includes('context length') ||
+    msg.includes('maximum context') ||
+    msg.includes('max context') ||
+    msg.includes('too many tokens')
+  ) {
+    return 'context_too_large';
+  }
+
+  if (
+    msg.includes('429') ||
+    msg.includes('rate limit') ||
+    msg.includes('too many requests') ||
+    msg.includes('quota') ||
+    msg.includes('resource_exhausted')
+  ) {
+    return 'rate_limit';
+  }
+
+  if (
+    msg.includes('aborted') ||
+    msg.includes('timeout') ||
+    msg.includes('etimedout') ||
+    msg.includes('econnrefused') ||
+    msg.includes('econnreset') ||
+    msg.includes('503') ||
+    msg.includes('unavailable') ||
+    msg.includes('500') ||
+    msg.includes('internal server error') ||
     // Provider-specific 400s can mean one upstream rejected a parameter that
     // another provider/model may accept. Keep bare "400 Bad Request" non-retryable.
-    || msg.includes('api error 400')
+    msg.includes('api error 400') ||
     // 404: model deprecated/removed upstream (e.g. OpenRouter's "no endpoints found"
-    // for a model that's been pulled). Rotate to the next model in the chain —
-    // setCooldown + the health checker will avoid this model on subsequent requests.
-    || msg.includes('404') || msg.includes('not found') || msg.includes('no endpoints found');
+    // for a model that's been pulled). Rotate to the next model in the chain.
+    msg.includes('404') ||
+    msg.includes('not found') ||
+    msg.includes('no endpoints found')
+  ) {
+    return 'transient';
+  }
+
+  return null;
+}
+
+export function isRetryableError(err: any): boolean {
+  return getRetryableFailureKind(err) !== null;
+}
+
+function responseForExhaustedFailures(
+  failures: { contextTooLarge: number; rateLimited: number; transient: number; provider: number },
+  lastError: any,
+) {
+  if (failures.contextTooLarge > 0) {
+    return { status: 413, type: 'invalid_request_error', message: `Request is too large for all eligible model routes. Last error: ${lastError?.message ?? 'context limit exceeded'}` };
+  }
+  if (failures.rateLimited > 0) {
+    return { status: 429, type: 'rate_limit_error', message: `All models rate-limited. Last error: ${lastError?.message ?? 'rate limit exceeded'}` };
+  }
+  return { status: 503, type: 'provider_error', message: `Provider error: ${lastError?.message ?? 'No usable model route is currently available'}` };
 }
 
 function getRouteSkipId(route: RouteResult): string {
@@ -310,10 +362,13 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   // different model would be surprising to OpenAI-compatible clients.
   // Sticky-session is the fallback when no `model` field was sent at all.
   let preferredModel: number | undefined;
+  let preferredModelSource: PreferredModelSource | undefined;
   let allowedModelIds: Set<number> | undefined;
+
   if (isAutoModel(requestedModel)) {
     // Explicit "auto" → behave exactly like an omitted model field.
     preferredModel = getStickyModel(messages);
+    preferredModelSource = preferredModel ? 'sticky' : undefined;
   } else if (requestedModel) {
     const db = getDb();
     const enabledRows = db.prepare(`
@@ -325,9 +380,8 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
     `).all(requestedModel) as { id: number }[];
     if (enabledRows.length > 0) {
       preferredModel = enabledRows[0].id;
-      if (autoretryEnabled) {
-        allowedModelIds = new Set(enabledRows.map(row => row.id));
-      }
+      preferredModelSource = 'explicit';
+      allowedModelIds = new Set(enabledRows.map(row => row.id));
     } else {
       const disabled = db.prepare('SELECT id FROM models WHERE model_id = ?').get(requestedModel) as { id: number } | undefined;
       const reason = disabled ? 'is disabled' : 'is not in the catalog';
@@ -342,13 +396,19 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
     }
   } else {
     preferredModel = getStickyModel(messages);
+    preferredModelSource = preferredModel ? 'sticky' : undefined;
   }
 
   // Retry loop: on 429/rate limit, skip that model+key and try the next one
   const skipKeys = new Set<string>();
   const skipRoutes = new Set<string>();
   let lastError: any = null;
-  let lastErrorWasTransient = false;
+  const failures = {
+    contextTooLarge: 0,
+    rateLimited: 0,
+    transient: 0,
+    provider: 0,
+  };
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     let route: RouteResult;
@@ -358,29 +418,26 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         skipKeys: skipKeys.size > 0 ? skipKeys : undefined,
         skipRoutes: skipRoutes.size > 0 ? skipRoutes : undefined,
         preferredModelDbId: preferredModel,
+        preferredModelSource,
         allowedModelIds,
       });
     } catch (err: any) {
       // No more models available
       if (lastError) {
-        if (lastErrorWasTransient) {
-          res.status(429).json({
-            error: {
-              message: `All models rate-limited. Last error: ${lastError.message}`,
-              type: 'rate_limit_error',
-            },
-          });
-        } else {
-          res.status(502).json({
-            error: {
-              message: `Provider error: ${lastError.message}`,
-              type: 'provider_error',
-            },
-          });
-        }
+        const response = responseForExhaustedFailures(failures, lastError);
+        res.status(response.status).json({
+          error: {
+            message: response.message,
+            type: response.type,
+          },
+        });
       } else {
+        const type =
+          err.status === 413 ? 'invalid_request_error'
+          : err.status === 429 ? 'rate_limit_error'
+          : 'routing_error';
         res.status(err.status ?? 503).json({
-          error: { message: err.message, type: 'routing_error' },
+          error: { message: err.message, type },
         });
       }
       return;
@@ -471,26 +528,41 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
       const latency = Date.now() - start;
       logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, err.message);
 
-      const transientRetryable = isRetryableError(err);
-
-      if (transientRetryable) {
-        if (autoretryEnabled) {
+      const retryableFailureKind = getRetryableFailureKind(err);
+      if (retryableFailureKind) {
+        if (retryableFailureKind === 'context_too_large') {
           skipRoutes.add(getRouteSkipId(route));
+          failures.contextTooLarge++;
+        } else if (autoretryEnabled) {
+          skipRoutes.add(getRouteSkipId(route));
+          if (retryableFailureKind === 'rate_limit') {
+            failures.rateLimited++;
+          } else {
+            failures.transient++;
+          }
         } else {
           skipKeys.add(getKeySkipId(route));
+          if (retryableFailureKind === 'rate_limit') {
+            failures.rateLimited++;
+          } else {
+            failures.transient++;
+          }
         }
-        setCooldown(route.platform, route.modelId, route.keyId, 120_000);
-        recordRateLimitHit(route.modelDbId);
+
+        if (retryableFailureKind === 'rate_limit') {
+          setCooldown(route.platform, route.modelId, route.keyId, 120_000);
+          recordRateLimitHit(route.modelDbId);
+        }
+
         lastError = err;
-        lastErrorWasTransient = true;
-        console.log(`[Proxy] ${err.message.slice(0, 60)} from ${route.displayName}, falling back (attempt ${attempt + 1}/${MAX_RETRIES})`);
+        console.log(`[Proxy] ${err.message.slice(0, 60)} from ${route.displayName}, falling back after ${retryableFailureKind} (attempt ${attempt + 1}/${MAX_RETRIES})`);
         continue;
       }
 
       if (autoretryEnabled) {
         skipRoutes.add(getRouteSkipId(route));
         lastError = err;
-        lastErrorWasTransient = false;
+        failures.provider++;
         console.log(`[Proxy] ${err.message.slice(0, 60)} from ${route.displayName}, autoretry route failover (attempt ${attempt + 1}/${MAX_RETRIES})`);
         continue;
       }
@@ -507,20 +579,11 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   }
 
   // Exhausted all retries
-  if (lastErrorWasTransient) {
-    res.status(429).json({
-      error: {
-        message: `All models rate-limited after ${MAX_RETRIES} attempts. Last: ${lastError?.message}`,
-        type: 'rate_limit_error',
-      },
-    });
-    return;
-  }
-
-  res.status(502).json({
+  const response = responseForExhaustedFailures(failures, lastError);
+  res.status(response.status).json({
     error: {
-      message: `Provider error: ${lastError?.message ?? 'All retry attempts failed'}`,
-      type: 'provider_error',
+      message: response.message,
+      type: response.type,
     },
   });
 });
