@@ -68,6 +68,27 @@ _Avoid_: public dashboard state.
 The ordered set of model routes the router may try for a request. The chain expresses routing preference, not a guarantee that every route is usable at runtime.
 _Avoid_: model list, provider list.
 
+**Context Window**:
+The maximum estimated prompt + completion budget a Model Route can accept.
+
+**Unknown Context Window**:
+`models.context_window = NULL` means the Context Window is unknown, not zero. Unknown routes remain eligible so incomplete catalog metadata does not break the Fallback Chain.
+
+**Context Window Source**:
+Routing uses the local `models.context_window` value. Provider metadata sync is a separate feature and must not probe Providers during request routing.
+
+**Context Window Routing**:
+Context Window is an eligibility constraint, not a ranking signal. The router must not prefer a larger-context model over a higher-quality model when both can fit the request.
+
+**Quality-Preserving Context Fallback**:
+When a Sticky Model cannot fit a request because its known Context Window is too small, the router first looks for context-compatible routes in the same or nearby Intelligence Rank band. If no nearby compatible route is usable, routing falls back to the normal Fallback Chain.
+
+**Explicit Model Pinning**:
+When a client requests a concrete model id, routing stays within enabled routes for that model id. Context-window fallback may return `413`, but must not silently replace the requested model with a different model.
+
+**Context Too Large Failure**:
+Upstream `413`, `payload too large`, `content too large`, or equivalent Provider context-limit errors are retryable for the current request but must not be treated as Rate Limit Failures. They skip the current route for the current request only and must not call cooldown or dynamic rate-limit penalty code. Routing exhaustion status priority is `413 > 429 > 503`.
+
 ## Flagged ambiguities
 
 **Provider Key error**:
