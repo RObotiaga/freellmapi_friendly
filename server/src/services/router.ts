@@ -9,10 +9,12 @@ interface ModelRow {
   platform: string;
   model_id: string;
   display_name: string;
+  intelligence_rank: number;
   rpm_limit: number | null;
   rpd_limit: number | null;
   tpm_limit: number | null;
   tpd_limit: number | null;
+  context_window: number | null;
 }
 
 interface KeyRow {
@@ -31,6 +33,10 @@ interface FallbackRow {
   enabled: number;
 }
 
+interface ChainEntry extends FallbackRow {
+  effectivePriority: number;
+}
+
 export interface RouteResult {
   provider: BaseProvider;
   modelId: string;
@@ -41,13 +47,18 @@ export interface RouteResult {
   displayName: string;
 }
 
+export type PreferredModelSource = 'sticky' | 'explicit';
+
 interface RouteRequestOptions {
   estimatedTokens?: number;
   skipKeys?: Set<string>;
   skipRoutes?: Set<string>;
   preferredModelDbId?: number;
+  preferredModelSource?: PreferredModelSource;
   allowedModelIds?: Set<number>;
 }
+
+const QUALITY_FALLBACK_BAND = 2;
 
 // Round-robin index per platform
 const roundRobinIndex = new Map<string, number>();
@@ -127,6 +138,27 @@ export function getAllPenalties(): Array<{ modelDbId: number; count: number; pen
   return result.sort((a, b) => b.penalty - a.penalty);
 }
 
+function modelCanFit(model: ModelRow, estimatedTokens: number): boolean {
+  return model.context_window === null || estimatedTokens <= model.context_window;
+}
+
+function createRoutingError(status: number, message: string) {
+  const err = new Error(message) as Error & { status?: number };
+  err.status = status;
+  return err;
+}
+
+function getModel(db: ReturnType<typeof getDb>, modelDbId: number): ModelRow | undefined {
+  return db.prepare('SELECT * FROM models WHERE id = ? AND enabled = 1').get(modelDbId) as ModelRow | undefined;
+}
+
+function sortByEffectivePriority(a: ChainEntry, b: ChainEntry): number {
+  if (a.effectivePriority !== b.effectivePriority) {
+    return a.effectivePriority - b.effectivePriority;
+  }
+  return a.priority - b.priority;
+}
+
 /**
  * Route a request to the best available model.
  * Models are sorted by (base_priority + rate_limit_penalty) so frequently
@@ -150,6 +182,7 @@ export function routeRequest(
           estimatedTokens: optionsOrEstimatedTokens,
           skipKeys: legacySkipKeys,
           preferredModelDbId: legacyPreferredModelDbId,
+          preferredModelSource: legacyPreferredModelDbId ? 'sticky' : undefined,
         }
       : optionsOrEstimatedTokens;
 
@@ -157,6 +190,7 @@ export function routeRequest(
   const skipKeys = options.skipKeys;
   const skipRoutes = options.skipRoutes;
   const preferredModelDbId = options.preferredModelDbId;
+  const preferredModelSource = options.preferredModelSource;
   const allowedModelIds = options.allowedModelIds;
   const db = getDb();
 
@@ -171,10 +205,42 @@ export function routeRequest(
   const sortedChain = fallbackChain.map(entry => ({
     ...entry,
     effectivePriority: entry.priority + getPenalty(entry.model_db_id),
-  })).sort((a, b) => a.effectivePriority - b.effectivePriority);
+  })).sort(sortByEffectivePriority);
 
-  // Sticky session: move preferred model to front of chain
-  if (preferredModelDbId) {
+  const preferredModel = preferredModelDbId ? getModel(db, preferredModelDbId) : undefined;
+  const preferredTooSmall =
+    !!preferredModel &&
+    !modelCanFit(preferredModel, estimatedTokens);
+
+  const shouldUseQualityPreservingContextFallback =
+    preferredTooSmall &&
+    preferredModelSource === 'sticky' &&
+    !allowedModelIds;
+
+  if (shouldUseQualityPreservingContextFallback && preferredModel) {
+    const maxRank = preferredModel.intelligence_rank + QUALITY_FALLBACK_BAND;
+    const nearby: ChainEntry[] = [];
+    const later: ChainEntry[] = [];
+
+    for (const entry of sortedChain) {
+      const model = getModel(db, entry.model_db_id);
+      if (model && model.intelligence_rank <= maxRank) {
+        nearby.push(entry);
+      } else {
+        later.push(entry);
+      }
+    }
+
+    sortedChain.splice(
+      0,
+      sortedChain.length,
+      ...nearby.sort(sortByEffectivePriority),
+      ...later.sort(sortByEffectivePriority),
+    );
+  } else if (preferredModelDbId) {
+    // Sticky or explicit preference: try preferred first when it is not a
+    // known-too-small sticky model. Explicit model pinning is enforced by
+    // allowedModelIds supplied by the proxy layer.
     const idx = sortedChain.findIndex(e => e.model_db_id === preferredModelDbId);
     if (idx > 0) {
       const [preferred] = sortedChain.splice(idx, 1);
@@ -182,20 +248,34 @@ export function routeRequest(
     }
   }
 
+  const exhaustion = {
+    contextTooLarge: 0,
+    rateLimited: 0,
+    unavailable: 0,
+  };
+
   for (const entry of sortedChain) {
     if (!entry.enabled) continue;
     if (allowedModelIds && !allowedModelIds.has(entry.model_db_id)) continue;
 
     // Get model details
-    const model = db.prepare('SELECT * FROM models WHERE id = ? AND enabled = 1').get(entry.model_db_id) as ModelRow | undefined;
+    const model = getModel(db, entry.model_db_id);
     if (!model) continue;
 
     const routeSkipId = `${model.platform}:${model.id}`;
     if (skipRoutes?.has(routeSkipId)) continue;
 
+    if (!modelCanFit(model, estimatedTokens)) {
+      exhaustion.contextTooLarge++;
+      continue;
+    }
+
     // Check if we have a provider for this platform
     const provider = getProvider(model.platform as any);
-    if (!provider) continue;
+    if (!provider) {
+      exhaustion.unavailable++;
+      continue;
+    }
 
     // Get all enabled keys for this platform except confirmed invalid keys.
     // Keep status='error' routable: it can be temporary provider/transport/quota state.
@@ -203,7 +283,10 @@ export function routeRequest(
       'SELECT * FROM api_keys WHERE platform = ? AND enabled = 1 AND status != ?'
     ).all(model.platform, 'invalid') as KeyRow[];
 
-    if (keys.length === 0) continue;
+    if (keys.length === 0) {
+      exhaustion.unavailable++;
+      continue;
+    }
 
     // Get limits once for this model
     const limits = {
@@ -224,11 +307,19 @@ export function routeRequest(
       const skipId = `${model.platform}:${model.model_id}:${key.id}`;
       if (skipKeys?.has(skipId)) continue;
 
-      // Check cooldown (from previous 429s)
-      if (isOnCooldown(model.platform, model.model_id, key.id)) continue;
-
-      if (!canMakeRequest(model.platform, model.model_id, key.id, limits)) continue;
-      if (!canUseTokens(model.platform, model.model_id, key.id, estimatedTokens, limits)) continue;
+      // Check cooldown / quota windows.
+      if (isOnCooldown(model.platform, model.model_id, key.id)) {
+        exhaustion.rateLimited++;
+        continue;
+      }
+      if (!canMakeRequest(model.platform, model.model_id, key.id, limits)) {
+        exhaustion.rateLimited++;
+        continue;
+      }
+      if (!canUseTokens(model.platform, model.model_id, key.id, estimatedTokens, limits)) {
+        exhaustion.rateLimited++;
+        continue;
+      }
 
       let decryptedKey: string;
       try {
@@ -236,6 +327,7 @@ export function routeRequest(
       } catch {
         db.prepare("UPDATE api_keys SET status = 'error', last_checked_at = datetime('now') WHERE id = ?")
           .run(key.id);
+        exhaustion.unavailable++;
         continue;
       }
 
@@ -262,7 +354,19 @@ export function routeRequest(
     // in the `sortedChain` for THIS specific request.
   }
 
-  const err = new Error('All models exhausted. Add more API keys or wait for rate limits to reset.') as any;
-  err.status = 429;
-  throw err;
+  if (exhaustion.contextTooLarge > 0) {
+    throw createRoutingError(
+      413,
+      `Request requires approximately ${estimatedTokens} tokens, but no enabled model route has a known context window large enough.`,
+    );
+  }
+
+  if (exhaustion.rateLimited > 0) {
+    throw createRoutingError(429, 'All models exhausted by rate limits or token quotas.');
+  }
+
+  throw createRoutingError(
+    503,
+    'All models exhausted. No usable model route is currently available.',
+  );
 }
